@@ -555,6 +555,88 @@ function sendOrderWhatsApp(){submitRealOrder()}
 function toggleChat(){document.getElementById('chatBox').classList.toggle('open')}function chatSuggest(type){let key=type==='birthday'?'suggestBirthday':type==='budget'?'suggestBudget':'suggestLuxury';document.getElementById('chatAnswer').textContent=t[currentLang][key]}
 window.addEventListener('scroll',()=>{document.getElementById('topBtn').classList.toggle('show',scrollY>500);document.querySelectorAll('.reveal').forEach(el=>{if(el.getBoundingClientRect().top<innerHeight-80)el.classList.add('show')})})
 window.addEventListener('load',()=>setTimeout(()=>document.getElementById('loader').classList.add('hide'),700))
+
+
+/* ===== FIXED SIMPLE SUPABASE CONNECTOR - works with your current columns only ===== */
+function productToDbRow(p){
+  const meta={
+    nameAr:p.ar?.name||'', nameEn:p.en?.name||'',
+    shortAr:p.ar?.short||'', shortEn:p.en?.short||'',
+    descAr:p.ar?.desc||'', descEn:p.en?.desc||'',
+    itemsAr:p.ar?.items||[], itemsEn:p.en?.items||[],
+    cat:p.cat||'budget', best:!!p.best
+  };
+  return {
+    name: meta.nameAr || meta.nameEn || 'هدية',
+    description: JSON.stringify(meta),
+    price: Number(p.price)||0,
+    image: p.image || '',
+    stock: p.outOfStock ? 0 : Math.max(1, Number(p.stock)||1),
+    sold_out: !!p.outOfStock
+  };
+}
+function dbRowToProduct(row){
+  let meta={};
+  try{ meta=JSON.parse(row.description||'{}')||{}; }catch(e){ meta={descAr:row.description||'', descEn:row.description||''}; }
+  const stockNum = Number(row.stock ?? 1);
+  const out = row.sold_out===true || stockNum<=0;
+  const best = !!meta.best;
+  const nameAr = meta.nameAr || row.name || 'هدية';
+  const nameEn = meta.nameEn || row.name || 'Gift';
+  const descAr = meta.descAr || row.description || '';
+  const descEn = meta.descEn || row.description || '';
+  return {
+    id:Number(row.id), emoji:'🎁', price:Number(row.price)||0,
+    cat:meta.cat||'budget', bg:'#fce8f0', badgeBg:out?'#777':(best?'#e8739a':'#9aA07a'),
+    best:best, outOfStock:out, stock:stockNum, image:row.image||'',
+    en:{name:nameEn, badge:out?'Sold Out':(best?'Best Seller':'New'), short:meta.shortEn||descEn||nameEn, desc:descEn||meta.shortEn||nameEn, items:meta.itemsEn||[]},
+    ar:{name:nameAr, badge:out?'نفذت الكمية':(best?'الأكثر طلباً':'جديد'), short:meta.shortAr||descAr||nameAr, desc:descAr||meta.shortAr||nameAr, items:meta.itemsAr||[]}
+  };
+}
+async function loadProductsFromSupabase(){
+  try{
+    if(!sbClient){products=[];showToast('Supabase غير محمل');return;}
+    const {data,error}=await sbClient.from('products').select('id,created_at,name,description,price,image,stock,sold_out').order('created_at',{ascending:false});
+    if(error) throw error;
+    products=(data||[]).map(dbRowToProduct);
+    refreshStore();
+  }catch(error){
+    console.error('Supabase products load error:', error);
+    products=[];
+    showToast('تعذر تحميل المنتجات: '+(error.message||'راجعي صلاحيات Supabase'));
+  }
+}
+async function uploadProductImageIfNeeded(productId){
+  const input=document.getElementById('adminImage');
+  const file=input?.files?.[0];
+  if(!file) return adminImageData||'';
+  // نخزن الصورة داخل عمود image مباشرة لتجنب مشاكل صلاحيات Storage
+  return await fileToBase64(file);
+}
+async function saveAdminProduct(){
+  const p=readAdminForm(); if(!p)return;
+  const btn=document.querySelector('[onclick="saveAdminProduct()"]'); const old=btn?btn.textContent:'';
+  try{
+    if(btn){btn.disabled=true;btn.textContent='جاري الحفظ...'}
+    const existingId=document.getElementById('adminProductId').value;
+    p.image=await uploadProductImageIfNeeded(existingId||Date.now());
+    const row=productToDbRow(p);
+    let res;
+    if(existingId){
+      res=await sbClient.from('products').update(row).eq('id',Number(existingId)).select().single();
+    }else{
+      res=await sbClient.from('products').insert([row]).select().single();
+    }
+    if(res.error) throw res.error;
+    clearAdminForm();
+    await loadProductsFromSupabase();
+    showToast('تم حفظ الهدية وظهرت في المتجر 🎀');
+  }catch(err){
+    console.error('Save product error:',err);
+    showToast('ما انحفظت الهدية: '+(err.message||'تأكدي من صلاحيات Supabase'));
+  }finally{ if(btn){btn.disabled=false;btn.textContent=old||'حفظ الهدية'} }
+}
+
 async function initApp(){
   applyLanguage();initFilters();
   await loadProductsFromSupabase();
